@@ -66,6 +66,10 @@ class FrameLevelRNN(torch.nn.Module):
         else:
             self.register_buffer('h0', torch.autograd.Variable(h0))
 
+        # print('============================')
+        # print(n_frame_samples)
+        # print('============================')
+
         self.input_expand = torch.nn.Conv1d(
             in_channels=n_frame_samples,
             out_channels=dim,
@@ -77,16 +81,15 @@ class FrameLevelRNN(torch.nn.Module):
             self.input_expand = torch.nn.utils.weight_norm(self.input_expand)
 
         # Tentative d'inclure le conditioning BGF (20-06-08)
-        self.input_conditioning = torch.nn.Conv1d(
-           in_channels = n_frame_samples,
-           out_channels = dim,
-           kernel_size = 1
-        )  
-
-        init.kaiming_uniform(self.input_conditioning.weight)
-        init.constant(self.input_conditioning.bias, 0)  
+        self.input_hf_vocoder = torch.nn.Conv1d(
+            in_channels=24,
+            out_channels=dim,
+            kernel_size=1
+        )
+        init.kaiming_uniform(self.input_hf_vocoder.weight)
+        init.constant(self.input_hf_vocoder.bias, 0)
         if weight_norm:
-           self.input_conditioning = torch.nn.utils.weight_norm(self.input_conditioning)
+            self.input_hf_vocoder = torch.nn.utils.weight_norm(self.input_hf_vocoder)
         #
 
         self.rnn = torch.nn.GRU(
@@ -123,15 +126,36 @@ class FrameLevelRNN(torch.nn.Module):
             )
 
     def forward(self, prev_samples, upper_tier_conditioning, hidden):
-        (batch_size, _, _) = prev_samples.size()
+        (batch_size, ToUnderstandVar, _) = prev_samples.size()
 
-        input = self.input_expand(
+        # tensor hf bidon représentant le données du conditionneur
+        hf_bidon = torch.zeros([batch_size,ToUnderstandVar,24])
+        hf_bidon = hf_bidon.cuda()
+
+        
+        ## Tentative d'inclure le conditioning BGF (20-06-10)
+        input1_test = self.input_expand(
           prev_samples.permute(0, 2, 1)
         ).permute(0, 2, 1)
-        ## Tentative d'inclure le conditioning BGF (20-06-09)
-        #input += self.input_conditioning(1000).permute(0, 2, 1)
+
+        input2_test = self.input_hf_vocoder(
+          hf_bidon.permute(0, 2, 1)
+        ).permute(0, 2, 1)
+
+        input = input1_test + input2_test
+
+        # Original
+        # input = self.input_expand(
+        #   prev_samples.permute(0, 2, 1)
+        # ).permute(0, 2, 1)
+
         ##
+
+        
         if upper_tier_conditioning is not None:
+            print('*******************')
+            print(upper_tier_conditioning.size())
+            print('*******************')
             input += upper_tier_conditioning
 
         reset = hidden is None
