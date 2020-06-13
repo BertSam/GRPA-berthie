@@ -16,11 +16,6 @@ class SampleRNN(torch.nn.Module):
 
         self.dim = dim
         self.q_levels = q_levels
-        # print('============================')
-        # print(frame_sizes)
-        # print('============================')
-        # print(np.cumprod(frame_sizes))
-        # print('============================')
 
         ns_frame_samples = map(int, np.cumprod(frame_sizes))
 
@@ -31,19 +26,13 @@ class SampleRNN(torch.nn.Module):
             for (frame_size, n_frame_samples) in zip(
                 frame_sizes, ns_frame_samples
             )
+            
         ])
-
-        # print('============================')
-        # print(frame_sizes[0])
-        # print('============================')
 
         self.sample_level_mlp = SampleLevelMLP(
             frame_sizes[0], dim, q_levels, weight_norm
         )
 
-        # print('============================')
-        # print(list(self.frame_level_rnns))
-        # print('============================')
 
     @property
     def lookback(self):
@@ -65,10 +54,6 @@ class FrameLevelRNN(torch.nn.Module):
             self.h0 = torch.nn.Parameter(h0)
         else:
             self.register_buffer('h0', torch.autograd.Variable(h0))
-
-        # print('============================')
-        # print(n_frame_samples)
-        # print('============================')
 
         self.input_expand = torch.nn.Conv1d(
             in_channels=n_frame_samples,
@@ -124,13 +109,12 @@ class FrameLevelRNN(torch.nn.Module):
             self.upsampling.conv_t = torch.nn.utils.weight_norm(
                 self.upsampling.conv_t
             )
-
-    def forward(self, prev_samples, upper_tier_conditioning, hidden):
-        (batch_size, ToUnderstandVar, _) = prev_samples.size()
+        
+    def forward(self, prev_samples, vocoder_conditioning, upper_tier_conditioning, hidden):
+        (batch_size, _, _) = prev_samples.size()
 
         # tensor hf bidon représentant le données du conditionneur
-        hf_bidon = torch.zeros([batch_size,ToUnderstandVar,24])
-        hf_bidon = hf_bidon.cuda()
+        #hf_bidon = torch.zeros([batch_size,ToUnderstandVar,24]).cuda()
 
         
         ## Tentative d'inclure le conditioning BGF (20-06-10)
@@ -138,9 +122,11 @@ class FrameLevelRNN(torch.nn.Module):
           prev_samples.permute(0, 2, 1)
         ).permute(0, 2, 1)
 
+
         input2_test = self.input_hf_vocoder(
-          hf_bidon.permute(0, 2, 1)
+          vocoder_conditioning.permute(0, 2, 1)
         ).permute(0, 2, 1)
+
 
         input = input1_test + input2_test
 
@@ -148,15 +134,10 @@ class FrameLevelRNN(torch.nn.Module):
         # input = self.input_expand(
         #   prev_samples.permute(0, 2, 1)
         # ).permute(0, 2, 1)
-
         ##
-
         
         if upper_tier_conditioning is not None:
-            print('*******************')
-            print(upper_tier_conditioning.size())
-            print('*******************')
-            input += upper_tier_conditioning
+            input = input + upper_tier_conditioning
 
         reset = hidden is None
 
@@ -165,7 +146,6 @@ class FrameLevelRNN(torch.nn.Module):
             hidden = self.h0.unsqueeze(1) \
                             .expand(n_rnn, batch_size, self.dim) \
                             .contiguous()
-
         (output, hidden) = self.rnn(input, hidden)
 
         output = self.upsampling(
@@ -247,10 +227,11 @@ class Runner:
     def reset_hidden_states(self):
         self.hidden_states = {rnn: None for rnn in self.model.frame_level_rnns}
 
-    def run_rnn(self, rnn, prev_samples, upper_tier_conditioning):
+    def run_rnn(self, rnn, prev_samples, vocoder_conditioning, upper_tier_conditioning):
         (output, new_hidden) = rnn(
-            prev_samples, upper_tier_conditioning, self.hidden_states[rnn]
+            prev_samples, vocoder_conditioning, upper_tier_conditioning, self.hidden_states[rnn]
         )
+        
         self.hidden_states[rnn] = new_hidden.detach()
         return output
 
@@ -263,29 +244,46 @@ class Predictor(Runner, torch.nn.Module):
     def forward(self, input_sequences, reset):
         if reset:
             self.reset_hidden_states()
-        # print("========================")
-        # print(input_sequences.size())
-        # print("========================")
+
         (batch_size, _) = input_sequences.size()
+
+        
+        vocoder_conditioning = torch.zeros([batch_size,24]).cuda()
+        
+               
+    
+        lpc_coef_bidon = torch.tensor([-0.0642,   -0.9402,   -0.0657,    0.1920,
+                                       -0.2137,   -0.0771,    0.1053,   -0.0500, 
+                                       -0.0884,    0.0893,    0.1497,    0.0223,
+                                       -0.0611,   -0.0665,    0.0337,    0.0246,
+                                       -0.0202,   -0.0286,   -0.0552,   -0.0678,
+                                        0.0454,    0.0757,    0.0714,    0.0100], dtype=torch.float).cuda()
+
+        for i in range(batch_size):
+            vocoder_conditioning[i,:] = lpc_coef_bidon
+
+
+        vocoder_conditioning = vocoder_conditioning.contiguous().view(
+            batch_size, -1, 24
+        )
 
         upper_tier_conditioning = None
         for rnn in reversed(self.model.frame_level_rnns):
-            # if upper_tier_conditioning is not None:
-            #     print("========================")
-            #     print(upper_tier_conditioning.size)
-            #     print("========================")
+
             from_index = self.model.lookback - rnn.n_frame_samples
             to_index = -rnn.n_frame_samples + 1
+
             prev_samples = 2 * utils.linear_dequantize(
                 input_sequences[:, from_index : to_index],
                 self.model.q_levels
             )
+
             prev_samples = prev_samples.contiguous().view(
                 batch_size, -1, rnn.n_frame_samples
             )
-
+            
             upper_tier_conditioning = self.run_rnn(
-                rnn, prev_samples, upper_tier_conditioning
+                rnn, prev_samples, vocoder_conditioning, upper_tier_conditioning
             )
 
         bottom_frame_size = self.model.frame_level_rnns[0].frame_size
@@ -302,6 +300,7 @@ class Generator(Runner):
     def __init__(self, model, cuda=False):
         super().__init__(model)
         self.cuda = cuda
+        print("AAAAALLLLO_3")
 
     def __call__(self, n_seqs, seq_len):
         # generation doesn't work with CUDNN for some reason
@@ -327,8 +326,30 @@ class Generator(Runner):
                     ).unsqueeze(1),
                     volatile=True
                 )
+                print('pppppppppppp')
+                print(prev_samples.size())
+                print(type(prev_samples))
+                print('pppppppppppp')
+                [SIZE_1, _, _] = prev_samples.size()
+                vocoder_conditioning = torch.zeros([SIZE_1,24])
+
+                lpc_coef_bidon = torch.tensor([-0.0642,   -0.9402,   -0.0657,    0.1920,
+                                               -0.2137,   -0.0771,    0.1053,   -0.0500, 
+                                               -0.0884,    0.0893,    0.1497,    0.0223,
+                                               -0.0611,   -0.0665,    0.0337,    0.0246,
+                                               -0.0202,   -0.0286,   -0.0552,   -0.0678,
+                                                0.0454,    0.0757,    0.0714,    0.0100], dtype=torch.float)
+
+                for i in range(SIZE_1):
+                    vocoder_conditioning[i,:] = lpc_coef_bidon
+
+                vocoder_conditioning = vocoder_conditioning.contiguous().view(
+                    SIZE_1, -1, 24
+                )
+
                 if self.cuda:
                     prev_samples = prev_samples.cuda()
+                    vocoder_conditioning = vocoder_conditioning.cuda()
 
                 if tier_index == len(self.model.frame_level_rnns) - 1:
                     upper_tier_conditioning = None
@@ -340,15 +361,32 @@ class Generator(Runner):
                                            .unsqueeze(1)
 
                 frame_level_outputs[tier_index] = self.run_rnn(
-                    rnn, prev_samples, upper_tier_conditioning
+                    rnn, prev_samples, vocoder_conditioning, upper_tier_conditioning
                 )
+            print('mmmmmmmmmmmmmmmm')
+            print(vocoder_conditioning.size())
+            print(type(vocoder_conditioning))
+            print(vocoder_conditioning)    
+            print('mmmmmmmmmmmmmmmm')
+            print(prev_samples.size())
+            print(type(prev_samples))
+            print(prev_samples)  
+            print('mmmmmmmmmmmmmmmm')
 
             prev_samples = torch.autograd.Variable(
                 sequences[:, i - bottom_frame_size : i],
                 volatile=True
             )
+            print(prev_samples.size())
+            print(type(prev_samples))
+            print(prev_samples)  
+            print('mmmmmmmmmmmmmmmm')
             if self.cuda:
                 prev_samples = prev_samples.cuda()
+                print(prev_samples.size())
+                print(type(prev_samples))
+                print(prev_samples)  
+                print('mmmmmmmmmmmmmmmm')
             upper_tier_conditioning = \
                 frame_level_outputs[0][:, i % bottom_frame_size, :] \
                                       .unsqueeze(1)

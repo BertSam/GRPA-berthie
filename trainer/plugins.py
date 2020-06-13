@@ -154,6 +154,10 @@ class GeneratorPlugin(Plugin):
         self.generate = Generator(trainer.model.model, trainer.cuda)
 
     def epoch(self, epoch_index):
+        print('3333333333333333333333333333333333333')
+        print(self.n_samples)
+        print(self.sample_length)
+        print('3333333333333333333333333333333333333')
         samples = self.generate(self.n_samples, self.sample_length) \
                       .cpu().float().numpy()
         for i in range(self.n_samples):
