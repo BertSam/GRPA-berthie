@@ -6,7 +6,7 @@ from torch.nn import functional as F
 from torch.nn import init
 
 import numpy as np
-
+import librosa
 
 class SampleRNN(torch.nn.Module):
 
@@ -211,7 +211,7 @@ class SampleLevelMLP(torch.nn.Module):
         x = F.relu(self.input(prev_samples) + upper_tier_conditioning)
         x = F.relu(self.hidden(x))
         x = self.output(x).permute(0, 2, 1).contiguous()
-        ## Ajout dim=1 BGF (20-06-08)
+
         temp = x.view(-1, self.q_levels)
         return F.log_softmax(temp) \
                 .view(batch_size, -1, self.q_levels)
@@ -278,10 +278,39 @@ class Predictor(Runner, torch.nn.Module):
                 self.model.q_levels
             )
 
+        
             prev_samples = prev_samples.contiguous().view(
                 batch_size, -1, rnn.n_frame_samples
             )
-            
+
+            order = 23 
+            if upper_tier_conditioning == None:
+                (_, N_LAYER, _) = prev_samples.size()
+                for batch in range(batch_size):
+                    for layer in range(N_LAYER):
+                        temp = prev_samples[batch, layer, :]
+                        #print("Print conversion tensor to numpy array test")
+                        #print(temp)
+                        #print(type(temp))
+                        temp = temp.cpu()
+                        temp = temp.numpy()
+                        incr = 0
+                        for samp in temp:
+                            temp[incr] = float(samp) 
+                            incr = incr+1
+                        #print(temp)
+                        #print(type(temp))
+                        #print(len(temp))
+                        lpc_coef_bidon_test[batch, layer, :] = librosa.core.lpc(temp, order)
+
+
+            print('IIIIIIIIIIIIIIIIIIIIIIIIIII')
+            #print(lpc_coef_bidon_test.size())
+            #print(type(lpc_coef_bidon_test))
+            print('======================')
+
+            #print(lpc_coef_bidon_test)
+            print('IIIIIIIIIIIIIIIIIIIIIIIIIII')
             upper_tier_conditioning = self.run_rnn(
                 rnn, prev_samples, vocoder_conditioning, upper_tier_conditioning
             )
@@ -330,8 +359,10 @@ class Generator(Runner):
                 print(prev_samples.size())
                 print(type(prev_samples))
                 print('pppppppppppp')
-                [SIZE_1, _, _] = prev_samples.size()
-                vocoder_conditioning = torch.zeros([SIZE_1,24])
+                [SIZE_1, SIZE_2, _] = prev_samples.size()
+                vocoder_conditioning = torch.zeros([SIZE_1,SIZE_2,24])
+
+                print('ICI1')
 
                 lpc_coef_bidon = torch.tensor([-0.0642,   -0.9402,   -0.0657,    0.1920,
                                                -0.2137,   -0.0771,    0.1053,   -0.0500, 
@@ -339,13 +370,15 @@ class Generator(Runner):
                                                -0.0611,   -0.0665,    0.0337,    0.0246,
                                                -0.0202,   -0.0286,   -0.0552,   -0.0678,
                                                 0.0454,    0.0757,    0.0714,    0.0100], dtype=torch.float)
-
+                print('ICI2')
                 for i in range(SIZE_1):
                     vocoder_conditioning[i,:] = lpc_coef_bidon
+                    print('ICI3')
 
                 vocoder_conditioning = vocoder_conditioning.contiguous().view(
                     SIZE_1, -1, 24
                 )
+                print('ICI4')
 
                 if self.cuda:
                     prev_samples = prev_samples.cuda()
