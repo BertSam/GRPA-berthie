@@ -77,16 +77,16 @@ class FrameLevelRNN(torch.nn.Module):
             self.input_expand = torch.nn.utils.weight_norm(self.input_expand)
 
         # Tentative d'inclure le conditioning BGF (20-06-08)
-        self.input_conditioning = torch.nn.Conv1d(
-           in_channels = n_frame_samples,
-           out_channels = dim,
-           kernel_size = 1
-        )  
+        # self.input_conditioning = torch.nn.Conv1d(
+        #    in_channels = n_frame_samples,
+        #    out_channels = dim,
+        #    kernel_size = 1
+        # )  
 
-        init.kaiming_uniform(self.input_conditioning.weight)
-        init.constant(self.input_conditioning.bias, 0)  
-        if weight_norm:
-           self.input_conditioning = torch.nn.utils.weight_norm(self.input_conditioning)
+        # init.kaiming_uniform(self.input_conditioning.weight)
+        # init.constant(self.input_conditioning.bias, 0)  
+        # if weight_norm:
+        #    self.input_conditioning = torch.nn.utils.weight_norm(self.input_conditioning)
         #
 
         self.rnn = torch.nn.GRU(
@@ -132,6 +132,7 @@ class FrameLevelRNN(torch.nn.Module):
         #input += self.input_conditioning(1000).permute(0, 2, 1)
         ##
         if upper_tier_conditioning is not None:
+            print(upper_tier_conditioning.size())
             input += upper_tier_conditioning
 
         reset = hidden is None
