@@ -7,6 +7,10 @@ from torch.nn import init
 
 import numpy as np
 import librosa
+import math
+import scipy
+import matplotlib.pyplot as plt
+
 
 class SampleRNN(torch.nn.Module):
 
@@ -116,6 +120,15 @@ class FrameLevelRNN(torch.nn.Module):
         # tensor hf bidon représentant le données du conditionneur
         #hf_bidon = torch.zeros([batch_size,ToUnderstandVar,24]).cuda()
 
+
+        print('lllllllllllll')
+        print(prev_samples.size())
+        print(type(prev_samples))
+        print('--------------------------')
+        print(vocoder_conditioning.size())
+        print(type(vocoder_conditioning))
+        print('lllllllllllll')
+
         
         ## Tentative d'inclure le conditioning BGF (20-06-10)
         input1_test = self.input_expand(
@@ -127,6 +140,13 @@ class FrameLevelRNN(torch.nn.Module):
           vocoder_conditioning.permute(0, 2, 1)
         ).permute(0, 2, 1)
 
+        print('lllllllllllll')
+        print(prev_samples.size())
+        print(type(prev_samples))
+        print('--------------------------')
+        print(vocoder_conditioning.size())
+        print(type(vocoder_conditioning))
+        print('lllllllllllll')
 
         input = input1_test + input2_test
 
@@ -135,9 +155,11 @@ class FrameLevelRNN(torch.nn.Module):
         #   prev_samples.permute(0, 2, 1)
         # ).permute(0, 2, 1)
         ##
-        
+
         if upper_tier_conditioning is not None:
             input = input + upper_tier_conditioning
+            print(upper_tier_conditioning.size())
+            exit()
 
         reset = hidden is None
 
@@ -240,34 +262,58 @@ class Predictor(Runner, torch.nn.Module):
 
     def __init__(self, model):
         super().__init__(model)
+        mean = 0
+        var = 100
+        std = math.sqrt(var)
+        mu, sigma = mean, std # mean and standard deviation
+        self.wgn = np.random.normal(mu, sigma, 160)
 
     def forward(self, input_sequences, reset):
         if reset:
             self.reset_hidden_states()
 
         (batch_size, _) = input_sequences.size()
-
         
-        vocoder_conditioning = torch.zeros([batch_size,24]).cuda()
-        
-               
-    
-        lpc_coef_bidon = torch.tensor([-0.0642,   -0.9402,   -0.0657,    0.1920,
-                                       -0.2137,   -0.0771,    0.1053,   -0.0500, 
-                                       -0.0884,    0.0893,    0.1497,    0.0223,
-                                       -0.0611,   -0.0665,    0.0337,    0.0246,
-                                       -0.0202,   -0.0286,   -0.0552,   -0.0678,
-                                        0.0454,    0.0757,    0.0714,    0.0100], dtype=torch.float).cuda()
-
-        for i in range(batch_size):
-            vocoder_conditioning[i,:] = lpc_coef_bidon
-
-
-        vocoder_conditioning = vocoder_conditioning.contiguous().view(
-            batch_size, -1, 24
-        )
-
         upper_tier_conditioning = None
+
+        #modif start here (bgf 20-06-16)
+
+        rnn_upper_tier = self.model.frame_level_rnns[-1]
+
+        # print(input_sequences.size())
+
+        # print(rnn_upper_tier.n_frame_samples)
+       
+        from_index = self.model.lookback - rnn_upper_tier.n_frame_samples
+        to_index = -rnn_upper_tier.n_frame_samples + 1
+
+        prev_samples = 2 * utils.linear_dequantize(
+            input_sequences[:, from_index : to_index],
+            self.model.q_levels
+        )
+        print(prev_samples.size())
+        prev_samples = prev_samples.contiguous().view(
+            batch_size, -1, rnn_upper_tier.n_frame_samples
+            )
+        print(prev_samples.size())
+        exit()
+        order = 23 
+
+        #vocoder_conditioning = torch.zeros([batch_size, N_LAYER, order+1]).cuda()
+    
+        (_, N_LAYER, nb_sample) = prev_samples.size()
+        for batch in range(batch_size):
+            for layer in range(N_LAYER):
+                temp = prev_samples[batch, layer, :].cpu().numpy()
+                print(len(temp))
+                print(len(self.wgn))
+                temp = temp + self.wgn
+                    
+                lpc_coef_test = librosa.core.lpc(temp, order)
+    
+                # vocoder_conditioning[batch, layer , :] = torch.tensor(lpc_coef_test, dtype=torch.float).cuda()
+    
+            
         for rnn in reversed(self.model.frame_level_rnns):
 
             from_index = self.model.lookback - rnn.n_frame_samples
@@ -278,39 +324,18 @@ class Predictor(Runner, torch.nn.Module):
                 self.model.q_levels
             )
 
+            print(prev_samples.size())
         
             prev_samples = prev_samples.contiguous().view(
                 batch_size, -1, rnn.n_frame_samples
             )
+            print(prev_samples.size())       
+            exit()
+            # vocoder_conditioning = vocoder_conditioning.contiguous().view(
+            #     batch_size, -1, 24
+            # )
 
-            order = 23 
-            if upper_tier_conditioning == None:
-                (_, N_LAYER, _) = prev_samples.size()
-                for batch in range(batch_size):
-                    for layer in range(N_LAYER):
-                        temp = prev_samples[batch, layer, :]
-                        #print("Print conversion tensor to numpy array test")
-                        #print(temp)
-                        #print(type(temp))
-                        temp = temp.cpu()
-                        temp = temp.numpy()
-                        incr = 0
-                        for samp in temp:
-                            temp[incr] = float(samp) 
-                            incr = incr+1
-                        #print(temp)
-                        #print(type(temp))
-                        #print(len(temp))
-                        lpc_coef_bidon_test[batch, layer, :] = librosa.core.lpc(temp, order)
-
-
-            print('IIIIIIIIIIIIIIIIIIIIIIIIIII')
-            #print(lpc_coef_bidon_test.size())
-            #print(type(lpc_coef_bidon_test))
-            print('======================')
-
-            #print(lpc_coef_bidon_test)
-            print('IIIIIIIIIIIIIIIIIIIIIIIIIII')
+            
             upper_tier_conditioning = self.run_rnn(
                 rnn, prev_samples, vocoder_conditioning, upper_tier_conditioning
             )
@@ -329,7 +354,6 @@ class Generator(Runner):
     def __init__(self, model, cuda=False):
         super().__init__(model)
         self.cuda = cuda
-        print("AAAAALLLLO_3")
 
     def __call__(self, n_seqs, seq_len):
         # generation doesn't work with CUDNN for some reason
