@@ -7,6 +7,11 @@ from torch.nn import init
 
 import numpy as np
 
+# class vocoder():
+#     def __init__(input_frame):
+#     super().__init__()
+
+
 
 class SampleRNN(torch.nn.Module):
 
@@ -60,6 +65,9 @@ class FrameLevelRNN(torch.nn.Module):
         self.n_frame_samples = n_frame_samples
         self.dim = dim
 
+        # Longueur de vecteur de conditionnement 
+        #self.M = M 
+
         h0 = torch.zeros(n_rnn, dim)
         if learn_h0:
             self.h0 = torch.nn.Parameter(h0)
@@ -78,7 +86,7 @@ class FrameLevelRNN(torch.nn.Module):
 
         # Tentative d'inclure le conditioning BGF (20-06-08)
         # self.input_conditioning = torch.nn.Conv1d(
-        #    in_channels = n_frame_samples,
+        #    in_channels = M,
         #    out_channels = dim,
         #    kernel_size = 1
         # )  
@@ -95,6 +103,7 @@ class FrameLevelRNN(torch.nn.Module):
             num_layers=n_rnn,
             batch_first=True
         )
+        
         for i in range(n_rnn):
             nn.concat_init(
                 getattr(self.rnn, 'weight_ih_l{}'.format(i)),
@@ -121,18 +130,21 @@ class FrameLevelRNN(torch.nn.Module):
             self.upsampling.conv_t = torch.nn.utils.weight_norm(
                 self.upsampling.conv_t
             )
-
+    #def forward(self, prev_samples, hf, upper_tier_conditioning):
     def forward(self, prev_samples, upper_tier_conditioning, hidden):
         (batch_size, _, _) = prev_samples.size()
 
         input = self.input_expand(
           prev_samples.permute(0, 2, 1)
         ).permute(0, 2, 1)
-        ## Tentative d'inclure le conditioning BGF (20-06-09)
-        #input += self.input_conditioning(1000).permute(0, 2, 1)
-        ##
+
+        # input_hf = self.input_conditioning(
+        #   hf.permute(0, 2, 1)
+        # ).permute(0, 2, 1)
+
+        # input += input_hf
+
         if upper_tier_conditioning is not None:
-            print(upper_tier_conditioning.size())
             input += upper_tier_conditioning
 
         reset = hidden is None
@@ -163,6 +175,7 @@ class SampleLevelMLP(torch.nn.Module):
             self.q_levels
         )
 
+
         self.input = torch.nn.Conv1d(
             in_channels=q_levels,
             out_channels=dim,
@@ -172,6 +185,16 @@ class SampleLevelMLP(torch.nn.Module):
         init.kaiming_uniform(self.input.weight)
         if weight_norm:
             self.input = torch.nn.utils.weight_norm(self.input)
+
+        self.input_hf = torch.nn.Conv1d(
+            in_channels=q_levels,
+            out_channels=dim,
+            kernel_size=frame_size,
+            bias=False
+        )
+        init.kaiming_uniform(self.input_hf.weight)
+        if weight_norm:
+            self.input_hf = torch.nn.utils.weight_norm(self.input_hf)
 
         self.hidden = torch.nn.Conv1d(
             in_channels=dim,
@@ -192,7 +215,7 @@ class SampleLevelMLP(torch.nn.Module):
         init.constant(self.output.bias, 0)
         if weight_norm:
             self.output = torch.nn.utils.weight_norm(self.output)
-
+    #def forward(self, prev_samples, hf, upper_tier_conditioning):
     def forward(self, prev_samples, upper_tier_conditioning):
         (batch_size, _, _) = upper_tier_conditioning.size()
 
@@ -224,6 +247,7 @@ class Runner:
     def reset_hidden_states(self):
         self.hidden_states = {rnn: None for rnn in self.model.frame_level_rnns}
 
+    # def run_rnn(self, rnn, prev_samples, hf, upper_tier_conditioning):
     def run_rnn(self, rnn, prev_samples, upper_tier_conditioning):
         (output, new_hidden) = rnn(
             prev_samples, upper_tier_conditioning, self.hidden_states[rnn]
@@ -240,35 +264,38 @@ class Predictor(Runner, torch.nn.Module):
     def forward(self, input_sequences, reset):
         if reset:
             self.reset_hidden_states()
-        # print("========================")
-        # print(input_sequences.size())
-        # print("========================")
+
         (batch_size, _) = input_sequences.size()
 
         upper_tier_conditioning = None
         for rnn in reversed(self.model.frame_level_rnns):
-            # if upper_tier_conditioning is not None:
-            #     print("========================")
-            #     print(upper_tier_conditioning.size)
-            #     print("========================")
+
             from_index = self.model.lookback - rnn.n_frame_samples
             to_index = -rnn.n_frame_samples + 1
             prev_samples = 2 * utils.linear_dequantize(
                 input_sequences[:, from_index : to_index],
                 self.model.q_levels
             )
+
+            print(prev_samples.size())
+            exit()
+
             prev_samples = prev_samples.contiguous().view(
                 batch_size, -1, rnn.n_frame_samples
             )
 
+            # upper_tier_conditioning = self.run_rnn(
+            #     rnn, prev_samples, hf, upper_tier_conditioning
+            # )
+
             upper_tier_conditioning = self.run_rnn(
                 rnn, prev_samples, upper_tier_conditioning
             )
-
+        
         bottom_frame_size = self.model.frame_level_rnns[0].frame_size
         mlp_input_sequences = input_sequences \
             [:, self.model.lookback - bottom_frame_size :]
-
+ 
         return self.model.sample_level_mlp(
             mlp_input_sequences, upper_tier_conditioning
         )
@@ -306,6 +333,7 @@ class Generator(Runner):
                 )
                 if self.cuda:
                     prev_samples = prev_samples.cuda()
+                
 
                 if tier_index == len(self.model.frame_level_rnns) - 1:
                     upper_tier_conditioning = None
