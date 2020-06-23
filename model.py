@@ -6,11 +6,10 @@ from torch.nn import functional as F
 from torch.nn import init
 
 import numpy as np
-
-# class vocoder():
-#     def __init__(input_frame):
-#     super().__init__()
-
+import librosa
+import math
+import scipy
+import matplotlib.pyplot as plt
 
 
 class SampleRNN(torch.nn.Module):
@@ -84,18 +83,18 @@ class FrameLevelRNN(torch.nn.Module):
         if weight_norm:
             self.input_expand = torch.nn.utils.weight_norm(self.input_expand)
 
-        # Tentative d'inclure le conditioning BGF (20-06-08)
-        # self.input_conditioning = torch.nn.Conv1d(
-        #    in_channels = M,
-        #    out_channels = dim,
-        #    kernel_size = 1
-        # )  
+        #Tentative d'inclure le conditioning BGF (20-06-08)
+        self.input_conditioning = torch.nn.Conv1d(
+           in_channels = 24,
+           out_channels = dim,
+           kernel_size = 1
+        )  
 
-        # init.kaiming_uniform(self.input_conditioning.weight)
-        # init.constant(self.input_conditioning.bias, 0)  
-        # if weight_norm:
-        #    self.input_conditioning = torch.nn.utils.weight_norm(self.input_conditioning)
-        #
+        init.kaiming_uniform(self.input_conditioning.weight)
+        init.constant(self.input_conditioning.bias, 0)  
+        if weight_norm:
+           self.input_conditioning = torch.nn.utils.weight_norm(self.input_conditioning)
+        
 
         self.rnn = torch.nn.GRU(
             input_size=dim,
@@ -130,19 +129,19 @@ class FrameLevelRNN(torch.nn.Module):
             self.upsampling.conv_t = torch.nn.utils.weight_norm(
                 self.upsampling.conv_t
             )
-    #def forward(self, prev_samples, hf, upper_tier_conditioning):
-    def forward(self, prev_samples, upper_tier_conditioning, hidden):
+    #def forward(self, prev_samples, upper_tier_conditioning):
+    def forward(self, prev_samples, hf, upper_tier_conditioning, hidden):
         (batch_size, _, _) = prev_samples.size()
 
         input = self.input_expand(
           prev_samples.permute(0, 2, 1)
         ).permute(0, 2, 1)
 
-        # input_hf = self.input_conditioning(
-        #   hf.permute(0, 2, 1)
-        # ).permute(0, 2, 1)
+        input_hf = self.input_conditioning(
+          hf.permute(0, 2, 1)
+        ).permute(0, 2, 1)
 
-        # input += input_hf
+        input += input_hf
 
         if upper_tier_conditioning is not None:
             input += upper_tier_conditioning
@@ -247,10 +246,10 @@ class Runner:
     def reset_hidden_states(self):
         self.hidden_states = {rnn: None for rnn in self.model.frame_level_rnns}
 
-    # def run_rnn(self, rnn, prev_samples, hf, upper_tier_conditioning):
-    def run_rnn(self, rnn, prev_samples, upper_tier_conditioning):
+    #def run_rnn(self, rnn, prev_samples, upper_tier_conditioning):
+    def run_rnn(self, rnn, prev_samples, hf, upper_tier_conditioning):    
         (output, new_hidden) = rnn(
-            prev_samples, upper_tier_conditioning, self.hidden_states[rnn]
+            prev_samples, hf, upper_tier_conditioning, self.hidden_states[rnn]
         )
         self.hidden_states[rnn] = new_hidden.detach()
         return output
@@ -267,8 +266,9 @@ class Predictor(Runner, torch.nn.Module):
 
         (batch_size, _) = input_sequences.size()
 
+        tier_ratio = np.zeros(len(self.model.frame_level_rnns))
         upper_tier_conditioning = None
-        for rnn in reversed(self.model.frame_level_rnns):
+        for c, rnn in enumerate(reversed(self.model.frame_level_rnns)):
 
             from_index = self.model.lookback - rnn.n_frame_samples
             to_index = -rnn.n_frame_samples + 1
@@ -276,20 +276,34 @@ class Predictor(Runner, torch.nn.Module):
                 input_sequences[:, from_index : to_index],
                 self.model.q_levels
             )
-
-            print(prev_samples.size())
-            exit()
-
+            
             prev_samples = prev_samples.contiguous().view(
                 batch_size, -1, rnn.n_frame_samples
             )
 
-            # upper_tier_conditioning = self.run_rnn(
-            #     rnn, prev_samples, hf, upper_tier_conditioning
-            # )
+            [batch_size_temp, layer_temp, _] = prev_samples.size()
+            
+            tier_ratio[c] = (self.model.frame_level_rnns[len(self.model.frame_level_rnns)-c-1].n_frame_samples) / (self.model.frame_level_rnns[len(self.model.frame_level_rnns)-c-2].n_frame_samples)
+             
+
+            if upper_tier_conditioning is None:
+                self.hf = torch.zeros([batch_size_temp, layer_temp, 24])
+                for batch in range(batch_size_temp):
+                    for layer  in range(layer_temp):
+                        temp_input = prev_samples[batch,layer,:]
+                        temp_lpc = vocoder(temp_input).get_lpc()
+                        self.hf[batch, layer, :] = torch.tensor(temp_lpc)
+            elif  upper_tier_conditioning is not None:
+                upper_tier_hf = self.hf
+                self.hf = torch.zeros([batch_size_temp, layer_temp, 24])
+                for batch in range(batch_size_temp):
+                    for layer  in range(layer_temp): 
+                        self.hf[batch, layer, :] = upper_tier_hf[batch, math.floor(layer/(tier_ratio[c-1])), :]
+
+            print(self.hf.size())
 
             upper_tier_conditioning = self.run_rnn(
-                rnn, prev_samples, upper_tier_conditioning
+                rnn, prev_samples, self.hf, upper_tier_conditioning
             )
         
         bottom_frame_size = self.model.frame_level_rnns[0].frame_size
@@ -365,3 +379,25 @@ class Generator(Runner):
         torch.backends.cudnn.enabled = True
 
         return sequences[:, self.model.lookback :]
+
+
+class vocoder:
+    def __init__(self, input_frame):
+        super().__init__()
+        mean = 0
+        var = 100 # (40db)
+        std = math.sqrt(var)
+        mu, sigma = mean, std # mean and standard deviation
+        self.wgn = np.random.normal(mu, sigma, 160)
+        self.order = 23
+        self.input_frame = input_frame
+
+    def get_lpc(self):
+        self.input_frame = self.input_frame.cpu().numpy()
+        #print(len(self.input_frame))
+        #print(len(self.wgn))
+        self.input_frame = self.input_frame + self.wgn
+
+        self.lpc_frame = librosa.core.lpc(self.input_frame, self.order)
+
+        return self.lpc_frame
