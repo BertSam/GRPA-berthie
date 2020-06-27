@@ -3,17 +3,53 @@ close all;
 clc;
 
 %% Chargement du signal
-
+cd('/home/berthie/Documents/t5/GRPA-berthie')
 [audioIn,fs] = audioread('NO_S.wav');
 
-audioIn=audioIn(fs:2*fs); % Garder juste une seconde, pour aller plus vite
+ts = 1/fs;
 
-% Afficher le signal pour voir ce dont il s'agit
+temp_des_seq = 10/1000; % durée désirée de la séquence
 
-figure(1);
+audioIn = audioIn(1:temp_des_seq*fs); % Garder juste une seconde, pour aller plus vite
+
+audioIn = audioIn-mean(audioIn);
+
+audioIn = audioIn./max(abs(audioIn));
+
+% Afficher le signal pour voir ce dontz il s'agit
 t = (0:length(audioIn)-1)/fs;
+% figure(1)
+% 
+% plot(t,audioIn);
+% legend('Signal source');
+% xlabel('Temps (s)')
+
+% Analyse LPC pour chacune des fenêtres
+
+ordre_lpc = 5;
+
+Az = lpc(audioIn,ordre_lpc);
+% freqz(Az,1)
+
+lsp = poly2lsf(Az);
+
+%trames_residu = zeros(numel(audioIn), 1);
+
+trames_residu = filter([0, -Az(2:end)],1,audioIn);
+
+res = audioIn-trames_residu;
+
+res_test = filter(Az,1,audioIn);
+
+
+
+figure
 plot(t,audioIn);
-legend('Signal source');
+hold on 
+plot(t,trames_residu);
+plot(t,res)
+plot(t,res_test+0.1)
+legend('Signal source','Prédiction','Résidu de prédiction','Résidu de prédiction test');
 xlabel('Temps (s)')
 
 %% Analyse LPC
@@ -22,7 +58,6 @@ xlabel('Temps (s)')
 
 l_wind = round(fs*0.03);
 l_step = round(fs*0.010);
-
 nb_win = floor((length(audioIn)-(l_wind-l_step))/l_step);
 winds = zeros(l_wind, nb_win);
 for i = 0:nb_win-1
@@ -50,8 +85,6 @@ end
 
 residu=reshape(trames_residu,l_step*nb_win,1);
 
-
-
 % Affichage du résidu
 
 figure(2);
@@ -60,7 +93,7 @@ plot(tp,audioIn(l_step+1:l_step*nb_win+l_step),'b');
 plot(tp,residu,'r');
 legend('Signal source','Résidu de prédiction');
 xlabel('Temps (s)')
-%%
+
 % Re-synthèse du signal
 
 trames_synthese = zeros(l_step,nb_win);
@@ -79,18 +112,18 @@ plot(tp,synthese,'r');
 legend('Signal source','Signal resynthétisé');
 xlabel('Temps (s)')
 
-% Jouer les signaux (notre oreille est plus sensible que nos yeux à
-% certains défauts sonores, qu'on appelle souvent artefacts de traitement)
-
-disp('Appuyer sur une touche pour jouer le signal d''origine')
-pause;
-sound(audioIn, fs);
-disp('Appuyer sur une touche pour jouer le residu de prediction')
-pause;
-sound(residu, fs);
-disp('Appuyer sur une touche pour jouer le signal de synthese')
-pause;
-sound(synthese, fs);
+% % Jouer les signaux (notre oreille est plus sensible que nos yeux à
+% % certains défauts sonores, qu'on appelle souvent artefacts de traitement)
+% 
+% disp('Appuyer sur une touche pour jouer le signal d''origine')
+% pause;
+% sound(audioIn, fs);
+% disp('Appuyer sur une touche pour jouer le residu de prediction')
+% pause;
+% sound(residu, fs);
+% disp('Appuyer sur une touche pour jouer le signal de synthese')
+% pause;
+% sound(synthese, fs);
 
 %% Calcul de l'énergie (serait plus lisse si calculée pitch-synchrone)
 

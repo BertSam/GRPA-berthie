@@ -9,7 +9,9 @@ import numpy as np
 import librosa
 import math
 import scipy
+from scipy.signal import lfilter
 import matplotlib.pyplot as plt
+from spectrum import poly2lsf, lsf2poly
 
 
 class SampleRNN(torch.nn.Module):
@@ -129,11 +131,12 @@ class FrameLevelRNN(torch.nn.Module):
             self.upsampling.conv_t = torch.nn.utils.weight_norm(
                 self.upsampling.conv_t
             )
-    #def forward(self, prev_samples, upper_tier_conditioning):
+    #def forward(self, prev_samples, upper_tier_conditioning, hidden):
     def forward(self, prev_samples, hf, upper_tier_conditioning, hidden):
         (batch_size, _, _) = prev_samples.size()
 
-        input = self.input_expand(
+
+        input_frame = self.input_expand(
           prev_samples.permute(0, 2, 1)
         ).permute(0, 2, 1)
 
@@ -141,7 +144,9 @@ class FrameLevelRNN(torch.nn.Module):
           hf.permute(0, 2, 1)
         ).permute(0, 2, 1)
 
-        input += input_hf
+      
+        input = input_frame + input_hf
+
 
         if upper_tier_conditioning is not None:
             input += upper_tier_conditioning
@@ -174,7 +179,6 @@ class SampleLevelMLP(torch.nn.Module):
             self.q_levels
         )
 
-
         self.input = torch.nn.Conv1d(
             in_channels=q_levels,
             out_channels=dim,
@@ -185,15 +189,17 @@ class SampleLevelMLP(torch.nn.Module):
         if weight_norm:
             self.input = torch.nn.utils.weight_norm(self.input)
 
-        self.input_hf = torch.nn.Conv1d(
-            in_channels=q_levels,
-            out_channels=dim,
-            kernel_size=frame_size,
-            bias=False
-        )
-        init.kaiming_uniform(self.input_hf.weight)
-        if weight_norm:
-            self.input_hf = torch.nn.utils.weight_norm(self.input_hf)
+        #Tentative d'inclure le conditioning BGF (20-06-08)
+        # self.input_conditioning = torch.nn.Conv1d(
+        #    in_channels = 24,
+        #    out_channels = dim,
+        #    kernel_size = 1
+        # )  
+        # init.kaiming_uniform(self.input_conditioning.weight)
+        # init.constant(self.input_conditioning.bias, 0)  
+        # if weight_norm:
+        #    self.input_conditioning = torch.nn.utils.weight_norm(self.input_conditioning)
+        #
 
         self.hidden = torch.nn.Conv1d(
             in_channels=dim,
@@ -226,6 +232,7 @@ class SampleLevelMLP(torch.nn.Module):
 
         prev_samples = prev_samples.permute(0, 2, 1)
         upper_tier_conditioning = upper_tier_conditioning.permute(0, 2, 1)
+        #hf = hf.permute(0, 2, 1)
 
         x = F.relu(self.input(prev_samples) + upper_tier_conditioning)
         x = F.relu(self.hidden(x))
@@ -248,6 +255,7 @@ class Runner:
 
     #def run_rnn(self, rnn, prev_samples, upper_tier_conditioning):
     def run_rnn(self, rnn, prev_samples, hf, upper_tier_conditioning):    
+        #print("IN: run_rnn()")
         (output, new_hidden) = rnn(
             prev_samples, hf, upper_tier_conditioning, self.hidden_states[rnn]
         )
@@ -287,29 +295,32 @@ class Predictor(Runner, torch.nn.Module):
              
 
             if upper_tier_conditioning is None:
-                self.hf = torch.zeros([batch_size_temp, layer_temp, 24])
+                hf = torch.zeros([batch_size_temp, layer_temp, 24], dtype=torch.float)
                 for batch in range(batch_size_temp):
                     for layer  in range(layer_temp):
                         temp_input = prev_samples[batch,layer,:]
-                        temp_lpc = vocoder(temp_input).get_lpc()
-                        self.hf[batch, layer, :] = torch.tensor(temp_lpc)
+                        
+                        temp_lpc = vocoder(temp_input).get_lsf()
+                        hf[batch, layer, :] = torch.tensor(temp_lpc)
+                        top_hf = hf
+ 
             elif  upper_tier_conditioning is not None:
-                upper_tier_hf = self.hf
-                self.hf = torch.zeros([batch_size_temp, layer_temp, 24])
+                upper_tier_hf = hf
+                hf = torch.zeros([batch_size_temp, layer_temp, 24], dtype=torch.float)
                 for batch in range(batch_size_temp):
                     for layer  in range(layer_temp): 
-                        self.hf[batch, layer, :] = upper_tier_hf[batch, math.floor(layer/(tier_ratio[c-1])), :]
+                        hf[batch, layer, :] = upper_tier_hf[batch, math.floor(layer/(tier_ratio[c-1])), :]
 
-            print(self.hf.size())
-
+            hf = hf.cuda()
+            
             upper_tier_conditioning = self.run_rnn(
-                rnn, prev_samples, self.hf, upper_tier_conditioning
+                rnn, prev_samples, hf, upper_tier_conditioning
             )
-        
+            
         bottom_frame_size = self.model.frame_level_rnns[0].frame_size
         mlp_input_sequences = input_sequences \
             [:, self.model.lookback - bottom_frame_size :]
- 
+
         return self.model.sample_level_mlp(
             mlp_input_sequences, upper_tier_conditioning
         )
@@ -332,6 +343,8 @@ class Generator(Runner):
                          .fill_(utils.q_zero(self.model.q_levels))
         frame_level_outputs = [None for _ in self.model.frame_level_rnns]
 
+
+        tier_ratio = np.zeros(len(self.model.frame_level_rnns))
         for i in range(self.model.lookback, self.model.lookback + seq_len):
             for (tier_index, rnn) in \
                     reversed(list(enumerate(self.model.frame_level_rnns))):
@@ -345,6 +358,11 @@ class Generator(Runner):
                     ).unsqueeze(1),
                     volatile=True
                 )
+                print(rnn)
+                print(tier_index)
+                print(prev_samples.size())
+
+
                 if self.cuda:
                     prev_samples = prev_samples.cuda()
                 
@@ -358,8 +376,38 @@ class Generator(Runner):
                         frame_level_outputs[tier_index + 1][:, frame_index, :] \
                                            .unsqueeze(1)
 
+                ###########
+                
+                [layer_temp, _, _] = prev_samples.size()
+
+                print(prev_samples[0,0,:])
+                print(prev_samples[1,0,:])
+               
+                tier_ratio[tier_index] = (self.model.frame_level_rnns[len(self.model.frame_level_rnns)-tier_index-1].n_frame_samples) / (self.model.frame_level_rnns[len(self.model.frame_level_rnns)-tier_index-2].n_frame_samples)
+                
+
+                if upper_tier_conditioning is None:
+                    hf = torch.zeros([layer_temp, 24], dtype=torch.float)
+                    for layer  in range(layer_temp):
+                        temp_input = prev_samples[layer,:]
+                        
+                        temp_lpc = vocoder(temp_input).get_lsf()
+                        hf[layer, :] = torch.tensor(temp_lpc)
+    
+                elif  upper_tier_conditioning is not None:
+                    upper_tier_hf = hf
+                    hf = torch.zeros([layer_temp, 24], dtype=torch.float)
+                    for layer  in range(layer_temp): 
+                        hf[layer, :] = upper_tier_hf[math.floor(layer/(tier_ratio[tier_index-1])), :]
+
+                hf = hf.cuda()
+
+                #####
+
+
+                print(prev_samples.size())
                 frame_level_outputs[tier_index] = self.run_rnn(
-                    rnn, prev_samples, upper_tier_conditioning
+                    rnn, prev_samples, hf, upper_tier_conditioning
                 )
 
             prev_samples = torch.autograd.Variable(
@@ -385,19 +433,37 @@ class vocoder:
     def __init__(self, input_frame):
         super().__init__()
         mean = 0
-        var = 100 # (40db)
+        var = 1/100 # (40db) (À confirmer)
         std = math.sqrt(var)
         mu, sigma = mean, std # mean and standard deviation
-        self.wgn = np.random.normal(mu, sigma, 160)
-        self.order = 23
         self.input_frame = input_frame
-
+        self.frame_size = self.input_frame.size()
+        self.wgn = np.random.normal(mu, sigma, self.frame_size)
+        self.order = 24
+        
     def get_lpc(self):
         self.input_frame = self.input_frame.cpu().numpy()
-        #print(len(self.input_frame))
-        #print(len(self.wgn))
         self.input_frame = self.input_frame + self.wgn
 
         self.lpc_frame = librosa.core.lpc(self.input_frame, self.order)
 
         return self.lpc_frame
+
+    def get_lsf(self):
+        lpc = self.get_lpc()
+        self.lsf = poly2lsf(lpc)
+
+        return self.lsf
+
+    # Calcul du résidu de prédiction
+    def get_resRMS_lvl(self):
+        residu = np.zeros(self.frame_size)
+        residu = lfilter(self.get_lpc(),1,self.input_frame)
+
+        self.resRMS = np.sqrt(np.mean(residu**2))
+    
+        return self.resRMS
+
+
+
+

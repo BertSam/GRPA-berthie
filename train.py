@@ -180,6 +180,7 @@ def main(exp, frame_sizes, dataset, **params):
         weight_norm=params['weight_norm']
     )
     predictor = Predictor(model)
+    
     if params['cuda']:
         model = model.cuda()
         predictor = predictor.cuda()
@@ -195,6 +196,7 @@ def main(exp, frame_sizes, dataset, **params):
         data_loader(0, val_split, eval=False),
         cuda=params['cuda']
     )
+    
 
     checkpoints_path = os.path.join(results_path, 'checkpoints')
     checkpoint_data = load_last_checkpoint(checkpoints_path)
@@ -203,7 +205,7 @@ def main(exp, frame_sizes, dataset, **params):
         trainer.epochs = epoch
         trainer.iterations = iteration
         predictor.load_state_dict(state_dict)
-
+    
     trainer.register_plugin(TrainingLossMonitor(
         smoothing=params['loss_smoothing']
     ))
