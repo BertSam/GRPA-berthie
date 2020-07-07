@@ -358,9 +358,9 @@ class Generator(Runner):
                     ).unsqueeze(1),
                     volatile=True
                 )
-                print(rnn)
-                print(tier_index)
-                print(prev_samples.size())
+                #print(rnn)
+                #print(tier_index)
+               # print(prev_samples.size())
 
 
                 if self.cuda:
@@ -377,35 +377,43 @@ class Generator(Runner):
                                            .unsqueeze(1)
 
                 ###########
-                
-                [layer_temp, _, _] = prev_samples.size()
 
-                print(prev_samples[0,0,:])
-                print(prev_samples[1,0,:])
+                #print(prev_samples.size())
+                [batch_size_temp, layer_temp, _] = prev_samples.size()
                
                 tier_ratio[tier_index] = (self.model.frame_level_rnns[len(self.model.frame_level_rnns)-tier_index-1].n_frame_samples) / (self.model.frame_level_rnns[len(self.model.frame_level_rnns)-tier_index-2].n_frame_samples)
-                
+            
 
                 if upper_tier_conditioning is None:
-                    hf = torch.zeros([layer_temp, 24], dtype=torch.float)
-                    for layer  in range(layer_temp):
-                        temp_input = prev_samples[layer,:]
-                        
-                        temp_lpc = vocoder(temp_input).get_lsf()
-                        hf[layer, :] = torch.tensor(temp_lpc)
+                    hf = torch.zeros([batch_size_temp, layer_temp, 24], dtype=torch.float)
+                    for batch in range(batch_size_temp):
+                        for layer  in range(layer_temp):
+                            temp_input = prev_samples[batch,layer,:]
+                            
+                            temp_lpc = vocoder(temp_input).get_lsf()
+                            hf[batch, layer, :] = torch.tensor(temp_lpc)
     
                 elif  upper_tier_conditioning is not None:
                     upper_tier_hf = hf
-                    hf = torch.zeros([layer_temp, 24], dtype=torch.float)
-                    for layer  in range(layer_temp): 
-                        hf[layer, :] = upper_tier_hf[math.floor(layer/(tier_ratio[tier_index-1])), :]
+                    hf = torch.zeros([batch_size_temp, layer_temp, 24], dtype=torch.float)
+                    for batch in range(batch_size_temp):
+                        for layer  in range(layer_temp): 
+                            # print('##########')
+                            # print(batch)
+                            # print('---')
+                            # print(layer)
+                            #print(math.floor(layer/(tier_ratio[tier_index-1])))
+                            if layer==0:
+                                hf[batch, layer, :] = upper_tier_hf[batch, 0, :]
+                            else:    
+                                hf[batch, layer, :] = upper_tier_hf[batch, math.floor(layer/(tier_ratio[tier_index-1])), :]
 
                 hf = hf.cuda()
 
                 #####
 
 
-                print(prev_samples.size())
+                #print(prev_samples.size())
                 frame_level_outputs[tier_index] = self.run_rnn(
                     rnn, prev_samples, hf, upper_tier_conditioning
                 )
