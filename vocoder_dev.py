@@ -10,8 +10,6 @@ import matplotlib.pyplot as plt
 from spectrum import poly2lsf, lsf2poly
 from statistics import mean
 from scipy.signal import lfilter
-import scipy.fftpack as sf
-
 
 class vocoder:
     def __init__(self, input_frame, samp_rate):
@@ -50,38 +48,12 @@ class vocoder:
     
         return self.resRMS
 
-    # def get_pitch(self, Low_cutoff, High_cutoff):   
+    def get_pitch(self, Low_cutoff, High_cutoff):  
+        pitches, magnitudes = librosa.core.piptrack(y=self.input_frame, window='hann', sr=self.sampling_rate, fmin=Low_cutoff, fmax=High_cutoff)
+        index = magnitudes.argmax()
+        self.pitch = pitches[index]
 
-    #     N = self.input_frame.size
-
-    #     wind = np.hanning(N) 
-
-    #     spectrum = np.fft.rfft(wind*self.input_frame, n=N) 
-        
-    #     f = np.zeros(int(N/2))
-    #     for i in range(0,int(N/2)):
-    #         f[i] = i
-         
-    #     f = self.sampling_rate*f/N
-    #     magn_spectrum = abs(spectrum/N)
-
-    #     print(len(f))
-    #     print(len(magn_spectrum[0:-1]))
-
-    #     plt.plot(f,magn_spectrum[0:-1]) 
-
-
-    #     plt.show()
-
-
-    #     [Low_cutoff, High_cutoff, self.sampling_rate] = map(float, [Low_cutoff, High_cutoff, self.sampling_rate])
-
-    #     #Convert cutoff frequencies into points on spectrum
-    #     [Low_point, High_point] = map(lambda F: F/self.sampling_rate * self.input_frame.size, [Low_cutoff, High_cutoff])
-        
-    #     pitch = np.where(Spectrum == np.max(Spectrum[Low_point : High_point])) # Calculating which frequency has max power.
-
-    #     return pitch
+        return self.pitch
 
 
     
@@ -108,36 +80,64 @@ audioIn = audioIn/max_sig
 
 t = np.arange(0, len(audioIn))/fs
 
-plt.plot(t, audioIn, label='Signal source')
-plt.legend()
-plt.xlabel('Temps (s)')
-plt.axis([0,0.01,-1,1])
+f0 = 125
+w0 = 2*math.pi*f0
+amplitude   = np.sin(w0*t)
+
+#pitches, magnitudes = librosa.piptrack(y=audioIn.astype(np.float), sr=fs, fmin=60, fmax=300)
+pitches, magnitudes = librosa.piptrack(y=audioIn, sr=fs, fmin=50, fmax=300, n_fft=1024)
+
+
+
+print('*****************************')
+print(pitches[np.nonzero(pitches)])
+print('*****************************')
+print(magnitudes[np.nonzero(pitches)])
+
+plt.plot(t, amplitude)
+plt.xlabel('Time')
+plt.ylabel('Amplitude')
 plt.show()
+
 
 # Analyse lpc
 
 ordre_lpc = 5
 
 
-vocoder = vocoder(audioIn, fs)
+# vocoder = vocoder(audioIn, fs)
 
-lpc = vocoder.get_lpc(ordre_lpc)
-lsf = vocoder.get_lsf(ordre_lpc)
+# lpc = vocoder.get_lpc(ordre_lpc)
+# lsf = vocoder.get_lsf(ordre_lpc)
+# pitch = vocoder.get_pitch(60, 600)
 
-pitch = vocoder.get_pitch(float(60), float(250))
-print(pitch)
+# print(pitch)
 
 
-# plt.plot(t, audioIn, label='Signal source')
-# plt.plot(t, pred, label='Signal pred')
-# plt.legend()
-# plt.xlabel('Temps (s)')
-# plt.axis([0,0.01,-1,1])
+
+#et x values of the sine wave
+ 
+# Amplitude ofthe sine wave is sine of a variable like time
+
+# f0 = 1000
+# w0 = 2*math.pi*f0
+# amplitude   = np.sin(w0*t)
+
+# # Plot a sine wave using time and amplitude obtained for the sine wave
+# plt.plot(t, amplitude)
+# # Give a title for the sine wave plot
+# plt.title('Sine wave')
+# # Give x axis label for the sine wave plot
+# plt.xlabel('Time')
+# # Give y axis label for the sine wave plot
+# plt.ylabel('Amplitude = sin(time)')
+# plt.grid(True, which='both')
+# plt.axhline(y=0, color='k')
 # plt.show()
 
 
+# vocoder = vocoder(amplitude, fs)
 
+# pitch = vocoder.get_pitch(60, 2000)
 
-
-
-
+# print(pitch)

@@ -60,6 +60,7 @@ class Trainer(object):
         for (self.iterations, data) in \
                 enumerate(self.dataset, self.iterations + 1):
             batch_inputs = data[: -1]
+
             batch_target = data[-1]
             self.call_plugins(
                 'batch', self.iterations, batch_inputs, batch_target

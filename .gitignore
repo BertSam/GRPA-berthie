@@ -2,3 +2,25 @@
 datasets/piano/
 
 datasets/timit_train/
+
+voc_analyse_bert.m~
+
+*.wav
+
+*.flac
+
+*.pdf
+
+.vscode/launch.json
+
+*.svg
+
+*.pkl
+
+.vscode/settings.json
+
+results/exp:TEST_timit-frame_sizes:2,1,8,10-seq_len:3200-batch_size:24-dataset:timit_train/checkpoints/best-ep6-it13440
+
+results/exp:TEST_timit-frame_sizes:2,1,8,10-seq_len:3200-batch_size:24-dataset:timit_train/checkpoints/ep6-it13440
+
+results/exp:TEST_timit-frame_sizes:2,1,8,10-seq_len:3200-batch_size:24-dataset:timit_train/log

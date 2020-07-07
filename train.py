@@ -47,7 +47,7 @@ default_params = {
     'epoch_limit': 1000,
     'resume': True,
     'sample_rate': 16000,
-    'n_samples': 2,
+    'n_samples': 1,
     'sample_length': 40000,
     'loss_smoothing': 0.99,
     'cuda': True,
