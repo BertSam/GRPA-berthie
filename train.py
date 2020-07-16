@@ -47,8 +47,8 @@ default_params = {
     'epoch_limit': 1000,
     'resume': True,
     'sample_rate': 16000,
-    'n_samples': 2,
-    'sample_length': 40000,
+    'n_samples': 1,
+    'sample_length': 80000,
     'loss_smoothing': 0.99,
     'cuda': True,
     'comet_key': None
@@ -56,7 +56,7 @@ default_params = {
 
 tag_params = [
     'exp', 'frame_sizes', 'n_rnn', 'dim', 'learn_h0', 'q_levels', 'seq_len',
-    'batch_size', 'dataset', 'val_frac', 'test_frac'
+    'batch_size', 'dataset', 'val_frac', 'test_frac', 'M'
 ]
 
 def param_to_string(value):
@@ -130,7 +130,7 @@ def tee_stdout(log_path):
 
 def make_data_loader(overlap_len, params):
     path = os.path.join(params['datasets_path'], params['dataset'])
-    def data_loader(split_from, split_to, eval):
+    def data_loader(split_from, split_to, M, eval):
         dataset = FolderDataset(
             path, overlap_len, params['q_levels'], split_from, split_to
         )
@@ -139,6 +139,7 @@ def make_data_loader(overlap_len, params):
             batch_size=params['batch_size'],
             seq_len=params['seq_len'],
             overlap_len=overlap_len,
+            M = params['M'],     
             shuffle=(not eval),
             drop_last=(not eval)
         )
@@ -161,10 +162,10 @@ def init_comet(params, trainer):
             ]
         ))
 
-def main(exp, frame_sizes, dataset, **params):
+def main(exp, frame_sizes, dataset, M, **params):
     params = dict(
         default_params,
-        exp=exp, frame_sizes=frame_sizes, dataset=dataset,
+        exp=exp, frame_sizes=frame_sizes, dataset=dataset, M = M,
         **params
     )
 
@@ -177,9 +178,10 @@ def main(exp, frame_sizes, dataset, **params):
         dim=params['dim'],
         learn_h0=params['learn_h0'],
         q_levels=params['q_levels'],
+        M=params['M'],
         weight_norm=params['weight_norm']
     )
-    predictor = Predictor(model)
+    predictor = Predictor(model, M=params['M'])
     if params['cuda']:
         model = model.cuda()
         predictor = predictor.cuda()
@@ -192,7 +194,7 @@ def main(exp, frame_sizes, dataset, **params):
 
     trainer = Trainer(
         predictor, sequence_nll_loss_bits, optimizer,
-        data_loader(0, val_split, eval=False),
+        data_loader(0, val_split, M = params['M'], eval=False),
         cuda=params['cuda']
     )
 
@@ -208,8 +210,8 @@ def main(exp, frame_sizes, dataset, **params):
         smoothing=params['loss_smoothing']
     ))
     trainer.register_plugin(ValidationPlugin(
-        data_loader(val_split, test_split, eval=True),
-        data_loader(test_split, 1, eval=True)
+        data_loader(val_split, test_split, M = M, eval=True),
+        data_loader(test_split, 1, M = M, eval=True)
     ))
     trainer.register_plugin(AbsoluteTimeMonitor())
     trainer.register_plugin(SaverPlugin(
@@ -217,7 +219,7 @@ def main(exp, frame_sizes, dataset, **params):
     ))
     trainer.register_plugin(GeneratorPlugin(
         os.path.join(results_path, 'samples'), params['n_samples'],
-        params['sample_length'], params['sample_rate']
+        params['sample_length'], params['sample_rate'], params['M']
     ))
     trainer.register_plugin(
         Logger([
@@ -350,6 +352,10 @@ if __name__ == '__main__':
     parser.add_argument(
         '--cuda', type=parse_bool,
         help='whether to use CUDA'
+    )
+    parser.add_argument(
+        '--M', type=int,
+        help='LPC filter order for conditioning'
     )
     parser.add_argument(
         '--comet_key', help='comet.ml API key'
