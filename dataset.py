@@ -98,6 +98,26 @@ class DataLoader(DataLoaderBase):
                 ind = t * fs
                 pitch = torch.cat([pitch, torch.tensor(f0[1::2], dtype=torch.float64)])
 
+                # # plot for presentation
+                # fig, ax1 = plt.subplots()
+
+                # color = 'tab:red'
+                # ax1.set_xlabel('Samples')
+                # ax1.set_ylabel('Loaded Signal (8-bits Quantized)', color=color)
+                # ax1.plot(temp_seq, color=color)
+                # ax1.tick_params(axis='y', labelcolor=color)
+
+                # ax2 = ax1.twinx()  # instantiate a second axes that shares the same x-axis
+
+                # color = 'tab:blue'
+                # ax2.set_ylabel('Pitch (Hz)', color=color)  # we already handled the x-label with ax1
+                # ax2.plot(ind, f0, color=color)
+                # ax2.tick_params(axis='y', labelcolor=color)
+
+                # fig.tight_layout()  # otherwise the right y-label is slightly clipped
+                # plt.show()
+                # exit()
+
                 # Extraction des lpc pour une trame "wind" (sur wind - overlap_len  à  wind + 2*overlap_len)
                 res = []
                 res = torch.tensor(res, dtype=torch.float64)
@@ -130,7 +150,10 @@ class DataLoader(DataLoaderBase):
                     mu, sigma = 0, std # mean = 0 and standard deviation
                     wgn = np.random.normal(mu, sigma, len(trame)) # génération bruit blanc gaussien
 
+                    # plt.plot(trame, label='Frame')
+
                     trame = trame + wgn # ajout de bruit blanc gaussien pour éviter "ill-conditioning"
+
 
                     # Conversion vers tenseur de lsf
                     a = librosa.core.lpc(trame , self.M)
@@ -142,13 +165,15 @@ class DataLoader(DataLoaderBase):
 
                     # Détection du voisement
                     voicing_frame_anal = temp_seq[seq_begin  : seq_begin + self.overlap_len]
-                    voicing_frame_anal = voicing_frame_anal - np.mean(voicing_frame_anal)
+                    voicing_frame_anal = voicing_frame_anal - 128
                     zero_crossings_counter = len(np.where(np.diff(np.sign(voicing_frame_anal)))[0])
+                    voicing_frame_anal = voicing_frame_anal + 128
 
                     if zero_crossings_counter <= 20 and zero_crossings_counter >= 3:
                         flag_voice = torch.tensor([1], dtype=torch.float64)
                     else:
                         flag_voice = torch.tensor([0], dtype=torch.float64)
+     
 
                     voicing_flag = torch.cat([voicing_flag, flag_voice])
 
@@ -160,7 +185,6 @@ class DataLoader(DataLoaderBase):
 
             pitch = torch.reshape(pitch, [batch_size, -1])
 
-            
             # correction pour cohérence pitch et voisement
             [_, size_] = pitch.size()
             for batch_ind in range(batch_size):
@@ -172,7 +196,7 @@ class DataLoader(DataLoaderBase):
             reset = True
 
             for seq_begin in range(self.overlap_len, n_samples, self.seq_len):
-
+   
                 #Extraction des param de la trame correspondante dans la séquence
                 trame_ind = torch.arange(int(seq_begin/self.overlap_len), int((seq_begin+self.seq_len)/self.overlap_len)).int().numpy()
                 input_lsfs = torch.reshape(lsf[:, trame_ind, :], (batch_size, -1))
